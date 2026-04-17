@@ -5,9 +5,11 @@ import {
   List, Gauge, Trash2, ImagePlus,
 } from 'lucide-react';
 import { useAudioPlayer } from '../hooks/useAudioPlayer';
+import { useTranscription } from '../hooks/useTranscription';
 import { updateProgress, updateBookmarks } from '../lib/db';
 import { getFileLocally, getLocalFileUrl, getCoverLocally, saveFileLocally } from '../lib/storage';
 import CoverPicker from './CoverPicker';
+import TranscriptPanel from './TranscriptPanel';
 import type { Audiobook, Bookmark as BookmarkType } from '../types';
 
 function formatTime(s: number): string {
@@ -27,6 +29,10 @@ interface PlayerProps {
 
 export default function Player({ audiobook, onBack, onBookmarksChange }: PlayerProps) {
   const player = useAudioPlayer(audiobook.chapters);
+  const [apiKey, setApiKey] = useState<string | null>(
+    () => localStorage.getItem('openai_api_key')
+  );
+  const transcription = useTranscription(apiKey);
   const [showChapters, setShowChapters] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showSpeed, setShowSpeed] = useState(false);
@@ -62,6 +68,7 @@ export default function Player({ audiobook, onBack, onBookmarksChange }: PlayerP
         setFileError(true);
         return;
       }
+      transcription.setFile(file);
       objectUrl = getLocalFileUrl(file);
       player.initAudio(objectUrl, audiobook.current_position);
     }
@@ -81,6 +88,13 @@ export default function Player({ audiobook, onBack, onBookmarksChange }: PlayerP
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [audiobook.id]);
+
+  // Feed current time to transcription engine
+  useEffect(() => {
+    if (player.state.isPlaying) {
+      transcription.onTimeUpdate(player.state.currentTime);
+    }
+  }, [Math.floor(player.state.currentTime / 5), player.state.isPlaying]);
 
   async function addBookmark() {
     const newBm: BookmarkType = {
@@ -437,6 +451,20 @@ export default function Player({ audiobook, onBack, onBookmarksChange }: PlayerP
             )}
           </div>
         )}
+      </div>
+
+      {/* Transcript Panel */}
+      <div className="px-4 pb-4 max-w-2xl mx-auto w-full">
+        <TranscriptPanel
+          segments={transcription.segments}
+          transcribing={transcription.transcribing}
+          error={transcription.error}
+          currentTime={player.state.currentTime}
+          onApiKeyChange={(key) => {
+            setApiKey(key);
+            if (!key) transcription.reset();
+          }}
+        />
       </div>
 
       {/* Cover Picker Modal */}
