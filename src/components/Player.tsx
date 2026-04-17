@@ -1,11 +1,13 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import {
   Play, Pause, SkipBack, SkipForward, RotateCcw, RotateCw,
   Bookmark, BookmarkPlus, ChevronLeft, Volume2, VolumeX,
-  List, Gauge, Trash2,
+  List, Gauge, Trash2, ImagePlus,
 } from 'lucide-react';
 import { useAudioPlayer } from '../hooks/useAudioPlayer';
-import { getFileUrl, updateProgress, updateBookmarks } from '../lib/db';
+import { updateProgress, updateBookmarks } from '../lib/db';
+import { getFileLocally, getLocalFileUrl, getCoverLocally, saveFileLocally } from '../lib/storage';
+import CoverPicker from './CoverPicker';
 import type { Audiobook, Bookmark as BookmarkType } from '../types';
 
 function formatTime(s: number): string {
@@ -28,6 +30,8 @@ export default function Player({ audiobook, onBack, onBookmarksChange }: PlayerP
   const [showChapters, setShowChapters] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showSpeed, setShowSpeed] = useState(false);
+  const [showCoverPicker, setShowCoverPicker] = useState(false);
+  const [coverUrl, setCoverUrl] = useState<string | null>(null);
   const [bookmarks, setBookmarks] = useState<BookmarkType[]>(audiobook.bookmarks ?? []);
 
   const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
@@ -37,9 +41,32 @@ export default function Player({ audiobook, onBack, onBookmarksChange }: PlayerP
     return (player.state.currentTime / player.state.duration) * 100;
   }, [player.state.currentTime, player.state.duration]);
 
+  const [fileError, setFileError] = useState(false);
+
+  // Load cover image
   useEffect(() => {
-    const url = getFileUrl(audiobook.file_path);
-    player.initAudio(url, audiobook.current_position);
+    getCoverLocally(audiobook.id).then((blob) => {
+      if (blob) setCoverUrl(URL.createObjectURL(blob));
+    });
+    return () => {
+      if (coverUrl) URL.revokeObjectURL(coverUrl);
+    };
+  }, [audiobook.id]);
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+
+    async function loadAudio() {
+      const file = await getFileLocally(audiobook.file_path);
+      if (!file) {
+        setFileError(true);
+        return;
+      }
+      objectUrl = getLocalFileUrl(file);
+      player.initAudio(objectUrl, audiobook.current_position);
+    }
+
+    loadAudio();
 
     player.onProgressSave(async (time: number) => {
       try {
@@ -49,7 +76,10 @@ export default function Player({ audiobook, onBack, onBookmarksChange }: PlayerP
       }
     });
 
-    return () => player.cleanup();
+    return () => {
+      player.cleanup();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
   }, [audiobook.id]);
 
   async function addBookmark() {
@@ -72,6 +102,66 @@ export default function Player({ audiobook, onBack, onBookmarksChange }: PlayerP
     await updateBookmarks(audiobook.id, updated);
   }
 
+  const reuploadRef = useRef<HTMLInputElement>(null);
+  const [reuploadingFile, setReuploadingFile] = useState(false);
+
+  async function handleReupload(file: File) {
+    setReuploadingFile(true);
+    try {
+      await saveFileLocally(audiobook.file_path, file);
+      setFileError(false);
+      // Reload the audio
+      const url = getLocalFileUrl(file);
+      player.initAudio(url, audiobook.current_position);
+    } catch (e) {
+      console.error('Re-upload error:', e);
+      alert('Erro ao salvar arquivo.');
+    } finally {
+      setReuploadingFile(false);
+    }
+  }
+
+  if (fileError) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center gap-4 p-4">
+        <div className="text-5xl">📁</div>
+        <h2 className="text-xl font-bold">Arquivo não encontrado</h2>
+        <p className="text-gray-400 text-center max-w-sm">
+          O audiobook "<strong>{audiobook.title}</strong>" não está disponível neste dispositivo.
+          Envie o arquivo novamente para continuar de onde parou. Seu progresso e marcadores estão salvos.
+        </p>
+        <p className="text-brand-300 text-sm font-medium">
+          Progresso: {formatTime(audiobook.current_position)} / {formatTime(audiobook.duration)}
+        </p>
+        <input
+          ref={reuploadRef}
+          type="file"
+          accept="audio/*,*/*"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleReupload(file);
+          }}
+        />
+        <div className="flex gap-3 mt-2">
+          <button
+            onClick={() => reuploadRef.current?.click()}
+            disabled={reuploadingFile}
+            className="px-6 py-2.5 bg-brand-600 hover:bg-brand-500 rounded-xl font-medium transition-colors disabled:opacity-50"
+          >
+            {reuploadingFile ? 'Salvando...' : 'Enviar arquivo'}
+          </button>
+          <button
+            onClick={onBack}
+            className="px-6 py-2.5 bg-gray-800 hover:bg-gray-700 rounded-xl font-medium transition-colors"
+          >
+            Voltar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-950 via-gray-900 to-gray-950 flex flex-col">
       {/* Header */}
@@ -91,14 +181,29 @@ export default function Player({ audiobook, onBack, onBookmarksChange }: PlayerP
       {/* Main content area */}
       <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 max-w-2xl mx-auto w-full">
         {/* Cover / Icon */}
-        <div className="w-48 h-48 bg-gradient-to-br from-brand-600/30 to-brand-800/30 rounded-3xl flex items-center justify-center mb-8 shadow-2xl border border-brand-500/20">
-          <div className="text-center">
-            <div className="text-5xl mb-2">🎧</div>
-            {player.state.currentChapter && (
-              <p className="text-brand-300 text-xs font-medium px-3 truncate max-w-[180px]">
-                {player.state.currentChapter.title}
-              </p>
-            )}
+        <div
+          className="w-52 h-52 rounded-3xl flex items-center justify-center mb-8 shadow-2xl border border-brand-500/20 relative group cursor-pointer overflow-hidden"
+          onClick={() => setShowCoverPicker(true)}
+        >
+          {coverUrl ? (
+            <img src={coverUrl} alt={audiobook.title} className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full bg-gradient-to-br from-brand-600/30 to-brand-800/30 flex items-center justify-center">
+              <div className="text-center">
+                <div className="text-5xl mb-2">🎧</div>
+                {player.state.currentChapter && (
+                  <p className="text-brand-300 text-xs font-medium px-3 truncate max-w-[180px]">
+                    {player.state.currentChapter.title}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+          <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+            <div className="text-center">
+              <ImagePlus className="w-6 h-6 mx-auto mb-1" />
+              <span className="text-xs">Alterar capa</span>
+            </div>
           </div>
         </div>
 
@@ -333,6 +438,19 @@ export default function Player({ audiobook, onBack, onBookmarksChange }: PlayerP
           </div>
         )}
       </div>
+
+      {/* Cover Picker Modal */}
+      {showCoverPicker && (
+        <CoverPicker
+          bookId={audiobook.id}
+          bookTitle={audiobook.title}
+          onCoverSet={(url) => {
+            setCoverUrl(url);
+            setShowCoverPicker(false);
+          }}
+          onClose={() => setShowCoverPicker(false)}
+        />
+      )}
     </div>
   );
 }

@@ -65,28 +65,13 @@ export async function updateBookmarks(id: string, bookmarks: Bookmark[]): Promis
   if (error) throw error;
 }
 
-export async function deleteAudiobook(id: string, filePath: string): Promise<void> {
-  await supabase.storage.from('audiobooks').remove([filePath]);
+export async function deleteAudiobook(id: string): Promise<void> {
   const { error } = await supabase.from('audiobooks').delete().eq('id', id);
   if (error) throw error;
 }
 
-export async function uploadAudioFile(
-  userId: string,
-  file: File
-): Promise<string> {
-  const filePath = `${userId}/${Date.now()}_${file.name}`;
-  const { error } = await supabase.storage
-    .from('audiobooks')
-    .upload(filePath, file, { cacheControl: '3600', upsert: false });
-
-  if (error) throw error;
-  return filePath;
-}
-
-export function getFileUrl(filePath: string): string {
-  const { data } = supabase.storage.from('audiobooks').getPublicUrl(filePath);
-  return data.publicUrl;
+export function generateFileKey(userId: string, fileName: string): string {
+  return `${userId}/${Date.now()}_${fileName}`;
 }
 
 function mapDbToAudiobook(row: any): Audiobook {

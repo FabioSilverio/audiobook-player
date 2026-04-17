@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import {
-  Headphones, LogOut, Play, Trash2, Clock, BookOpen, Search,
+  Headphones, LogOut, Play, Trash2, Clock, BookOpen, Search, CloudOff,
 } from 'lucide-react';
 import { getAudiobooks, deleteAudiobook } from '../lib/db';
+import { deleteFileLocally, deleteCoverLocally, getCoverLocally, getFileLocally } from '../lib/storage';
 import UploadArea from './Upload';
 import type { Audiobook } from '../types';
 
@@ -55,7 +56,9 @@ export default function Library({
     if (!confirm(`Remover "${book.title}"? O arquivo será deletado.`)) return;
     setDeleting(book.id);
     try {
-      await deleteAudiobook(book.id, book.file_path);
+      await deleteFileLocally(book.file_path);
+      await deleteCoverLocally(book.id);
+      await deleteAudiobook(book.id);
       setBooks((prev) => prev.filter((b) => b.id !== book.id));
     } catch (err) {
       console.error('Error deleting:', err);
@@ -175,20 +178,46 @@ function BookCard({
   isDeleting: boolean;
 }) {
   const pct = progressPercent(book);
+  const [cover, setCover] = useState<string | null>(null);
+  const [hasLocalFile, setHasLocalFile] = useState(true);
+
+  useEffect(() => {
+    getCoverLocally(book.id).then((blob) => {
+      if (blob) setCover(URL.createObjectURL(blob));
+    });
+    getFileLocally(book.file_path).then((f) => setHasLocalFile(!!f));
+    return () => { if (cover) URL.revokeObjectURL(cover); };
+  }, [book.id]);
+
   return (
-    <div className="bg-gray-800/40 hover:bg-gray-800/70 border border-gray-700/40 rounded-xl p-4 transition-all group">
+    <div className={`bg-gray-800/40 hover:bg-gray-800/70 border rounded-xl p-4 transition-all group ${
+      hasLocalFile ? 'border-gray-700/40' : 'border-yellow-600/30'
+    }`}>
       <div className="flex items-center gap-4">
-        {/* Play button */}
+        {/* Cover / Play button */}
         <button
           onClick={onSelect}
-          className="w-12 h-12 bg-brand-600/20 hover:bg-brand-600/40 rounded-xl flex items-center justify-center flex-shrink-0 transition-colors"
+          className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 transition-colors overflow-hidden"
         >
-          <Play className="w-5 h-5 text-brand-300 ml-0.5" />
+          {cover ? (
+            <img src={cover} alt={book.title} className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full bg-brand-600/20 hover:bg-brand-600/40 flex items-center justify-center">
+              <Play className="w-5 h-5 text-brand-300 ml-0.5" />
+            </div>
+          )}
         </button>
 
         {/* Info */}
         <div className="flex-1 min-w-0 cursor-pointer" onClick={onSelect}>
-          <h3 className="font-semibold truncate">{book.title}</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="font-semibold truncate">{book.title}</h3>
+            {!hasLocalFile && (
+              <span className="flex items-center gap-1 text-yellow-500 text-xs flex-shrink-0" title="Arquivo não disponível neste dispositivo">
+                <CloudOff className="w-3 h-3" />
+              </span>
+            )}
+          </div>
           <p className="text-gray-400 text-sm truncate">{book.author}</p>
           <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-500">
             <span className="flex items-center gap-1">

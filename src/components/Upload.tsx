@@ -1,8 +1,14 @@
 import { useState, useRef } from 'react';
-import { Upload as UploadIcon, Loader2, Music } from 'lucide-react';
+import { Upload as UploadIcon, Loader2 } from 'lucide-react';
 import * as mm from 'music-metadata-browser';
-import { uploadAudioFile, createAudiobook, getFileUrl } from '../lib/db';
+import { generateFileKey, createAudiobook } from '../lib/db';
+import { saveFileLocally } from '../lib/storage';
 import type { Chapter } from '../types';
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 interface UploadProps {
   userId: string;
@@ -11,7 +17,8 @@ interface UploadProps {
 
 export default function UploadArea({ userId, onUploadComplete }: UploadProps) {
   const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState('');
+  const [statusText, setStatusText] = useState('');
+  const [progressPct, setProgressPct] = useState(0);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -24,8 +31,10 @@ export default function UploadArea({ userId, onUploadComplete }: UploadProps) {
     }
 
     setUploading(true);
+    setProgressPct(0);
     try {
-      setProgress('Lendo metadados...');
+      setStatusText('Lendo metadados...');
+      setProgressPct(5);
       const metadata = await mm.parseBlob(file);
 
       const title = metadata.common.title || file.name.replace(/\.[^.]+$/, '');
@@ -34,14 +43,6 @@ export default function UploadArea({ userId, onUploadComplete }: UploadProps) {
 
       // Extract chapters from metadata
       const chapters: Chapter[] = [];
-      const nativeChapters = metadata.native?.['iTunes']
-        ?.filter((t: any) => t.id === 'chpl' || t.id === '----')
-        ?? [];
-
-      // Try to get chapters from common chapter tags
-      if (metadata.common.track?.no && metadata.format.duration) {
-        // M4B chapters are sometimes in the native metadata
-      }
 
       // Parse chapter data from native tags
       const chapterTag = Object.values(metadata.native || {}).flat().filter(
@@ -59,39 +60,51 @@ export default function UploadArea({ userId, onUploadComplete }: UploadProps) {
         });
       }
 
-      setProgress('Fazendo upload do arquivo...');
-      const filePath = await uploadAudioFile(userId, file);
+      setStatusText(`Salvando arquivo localmente (${formatSize(file.size)})...`);
+      setProgressPct(15);
 
-      // Extract cover art URL
-      let coverUrl: string | null = null;
-      if (metadata.common.picture && metadata.common.picture.length > 0) {
-        const pic = metadata.common.picture[0];
-        const blob = new Blob([new Uint8Array(pic.data)], { type: pic.format });
-        // We'll skip cover upload for now to keep it simple, could upload to storage
-        coverUrl = null;
-      }
+      const fileKey = generateFileKey(userId, file.name);
 
-      setProgress('Salvando audiobook...');
+      // Save to IndexedDB - simulate progress for large files
+      const startTime = Date.now();
+      const savePromise = saveFileLocally(fileKey, file);
+
+      // Progress animation while saving
+      const progressInterval = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const estimatedPct = Math.min(15 + (elapsed / 100) * 0.5, 85);
+        setProgressPct(estimatedPct);
+      }, 100);
+
+      await savePromise;
+      clearInterval(progressInterval);
+      setProgressPct(90);
+
+      setStatusText('Salvando metadados na nuvem...');
       await createAudiobook({
         user_id: userId,
         title,
         author,
         file_name: file.name,
-        file_path: filePath,
-        cover_url: coverUrl,
+        file_path: fileKey,
+        cover_url: null,
         duration,
         current_position: 0,
         chapters,
         bookmarks: [],
       });
 
-      setProgress('');
+      setProgressPct(100);
+      setStatusText('Concluído!');
+      await new Promise((r) => setTimeout(r, 500));
       onUploadComplete();
     } catch (err: any) {
       console.error('Upload error:', err);
       alert('Erro no upload: ' + (err.message || 'Erro desconhecido'));
     } finally {
       setUploading(false);
+      setProgressPct(0);
+      setStatusText('');
     }
   }
 
@@ -102,20 +115,20 @@ export default function UploadArea({ userId, onUploadComplete }: UploadProps) {
           ? 'border-brand-400 bg-brand-500/10'
           : 'border-gray-700 hover:border-gray-600 bg-gray-900/50'
       }`}
-      onClick={() => inputRef.current?.click()}
+      onClick={() => !uploading && inputRef.current?.click()}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => {
         e.preventDefault();
         setDragOver(false);
         const file = e.dataTransfer.files[0];
-        if (file) handleFile(file);
+        if (file && !uploading) handleFile(file);
       }}
     >
       <input
         ref={inputRef}
         type="file"
-        accept=".mp3,.m4b,.m4a,.aac,.ogg,.opus"
+        accept="audio/*,*/*"
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
@@ -124,9 +137,20 @@ export default function UploadArea({ userId, onUploadComplete }: UploadProps) {
       />
 
       {uploading ? (
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 className="w-10 h-10 text-brand-400 animate-spin" />
-          <p className="text-gray-300 font-medium">{progress}</p>
+        <div className="flex flex-col items-center gap-4 w-full max-w-xs mx-auto">
+          <Loader2 className="w-8 h-8 text-brand-400 animate-spin" />
+          <div className="w-full">
+            <div className="flex justify-between text-xs text-gray-400 mb-1.5">
+              <span>{statusText}</span>
+              <span>{Math.round(progressPct)}%</span>
+            </div>
+            <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-brand-600 to-brand-400 rounded-full transition-all duration-300"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+          </div>
         </div>
       ) : (
         <div className="flex flex-col items-center gap-3">
@@ -135,7 +159,7 @@ export default function UploadArea({ userId, onUploadComplete }: UploadProps) {
           </div>
           <div>
             <p className="text-gray-300 font-medium">Arraste um audiobook ou clique para selecionar</p>
-            <p className="text-gray-500 text-sm mt-1">MP3, M4B, M4A, AAC, OGG, OPUS</p>
+            <p className="text-gray-500 text-sm mt-1">MP3, M4B, M4A, AAC, OGG, OPUS — sem limite de tamanho</p>
           </div>
         </div>
       )}
